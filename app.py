@@ -56,8 +56,8 @@ def calculate_password_hash(password, salt):
     return hashlib.sha256(password + ':' + salt).hexdigest()
 
 
-def _user_key(user_id):
-    return 'U:{0}'.format(user_id)
+def _user_key(user_login):
+    return 'U:{0}'.format(user_login)
 
 
 def _ip_key(ip):
@@ -67,12 +67,28 @@ def _ip_key(ip):
 def load_data():
     r = connect_redis()
     r.flushall()
+
+    load_users(r)
+
     cur = connect_db().cursor()
     cur.execute('SELECT * FROM login_log')
     for row in cur.fetchall():
         login_log(bool(row['succeeded']), row['login'], row['user_id'], row['ip'], row['created_at'], r)
 
     cur.close()
+
+
+def load_users(r):
+    with open('/home/isucon/sql/dummy_users.tsv') as f:
+        for line in f:
+            id, login, password, salt, password_hash = line.rstrip().split('\t')
+            user_key = _user_key(login)
+            r.hmset(user_key, {
+                'id': id,
+                'login': login,
+                'passwd': password,
+                'failure': 0,
+            })
 
 
 def login_log(succeeded, login, user_id=None, ip=None, now=None, r=None):
@@ -84,7 +100,7 @@ def login_log(succeeded, login, user_id=None, ip=None, now=None, r=None):
         now = datetime.now()
     print('login_log: ' + str(succeeded) + ', ' + login + ', ' + str(user_id) + ', ' + ip)
     if succeeded:
-        user_key = _user_key(user_id)
+        user_key = _user_key(login)
         last_login = r.hgetall(user_key)
         current_login = dict(last_login)
         current_login['failure'] = 0
@@ -96,7 +112,7 @@ def login_log(succeeded, login, user_id=None, ip=None, now=None, r=None):
         r.hset(ip_key, 'failure', 0)
         return last_login
     elif user_id:
-        user_key = _user_key(user_id)
+        user_key = _user_key(login)
         r.hincrby(user_key, 'failure', 1)
 
         ip_key = _ip_key(ip)
@@ -122,10 +138,11 @@ def login_log(succeeded, login, user_id=None, ip=None, now=None, r=None):
 def user_locked(user):
     if not user:
         return None
-    r = get_redis()
-    key = _user_key(user['id'])
+    return int(user.get('failure', 0)) >= config['user_lock_threshold']
+    #r = get_redis()
+    #key = _user_key(user['login'])
 
-    return int(r.hget(key, 'failure') or 0) >= config['user_lock_threshold']
+    #return int(r.hget(key, 'failure') or 0) >= config['user_lock_threshold']
 
     #cur = get_db().cursor()
     #cur.execute(
@@ -155,10 +172,13 @@ def ip_banned():
     #return config['ip_ban_threshold'] <= log['failures']
 
 def attempt_login(login, password):
-    cur = get_db().cursor()
-    cur.execute('SELECT * FROM users WHERE login=%s', (login,))
-    user = cur.fetchone()
-    cur.close()
+    #cur = get_db().cursor()
+    #cur.execute('SELECT * FROM users WHERE login=%s', (login,))
+    #user = cur.fetchone()
+    #cur.close()
+    r = get_redis()
+    user_key = _user_key(login)
+    user = r.hgetall(user_key) or None
 
     if ip_banned():
         if user:
@@ -171,7 +191,8 @@ def attempt_login(login, password):
         login_log(False, login, user['id'])
         return [None, 'locked']
 
-    if user and calculate_password_hash(password, user['salt']) == user['password_hash']:
+    #if user and calculate_password_hash(password, user['salt']) == user['password_hash']:
+    if user and password == user['passwd']:
         last_login = login_log(True, login, user['id'])
         session['user_login'] = login
         session['last_login_at'] = last_login.get('last_login_at')
@@ -274,17 +295,18 @@ def get_ban_report():
 
         if key_type == 'U':
             if int(r.hget(key, 'failure')) >= config['user_lock_threshold']:
-                locked_user_ids.append(key_id)
+                locked_users.append(key_id)
+                #locked_user_ids.append(key_id)
         elif key_type == 'IP':
             if int(r.hget(key, 'failure')) >= config['ip_ban_threshold']:
                 banned_ips.append(key_id)
         else:
             unknown_keys.append(key)
 
-    cur = get_db().cursor()
-    cur.execute('SELECT login FROM users WHERE id in ({0})'.format(','.join(locked_user_ids)))
-    for row in cur.fetchall():
-        locked_users.append(row['login'])
+    #cur = get_db().cursor()
+    #cur.execute('SELECT login FROM users WHERE id in ({0})'.format(','.join(locked_user_ids)))
+    #for row in cur.fetchall():
+    #    locked_users.append(row['login'])
 
     return {'banned_ips': banned_ips, 'locked_users': locked_users}
 
