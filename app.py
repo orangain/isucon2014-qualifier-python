@@ -1,5 +1,3 @@
-import MySQLdb
-from MySQLdb.cursors import DictCursor
 import redis
 
 from flask import (
@@ -8,41 +6,28 @@ from flask import (
 )
 from werkzeug.contrib.fixers import ProxyFix
 
-import os, hashlib
-from datetime import date, datetime
-import time
+import os
+import hashlib
+from datetime import datetime
 
 config = {}
 app = Flask(__name__, static_url_path='')
 app.wsgi_app = ProxyFix(app.wsgi_app)
 app.secret_key = os.environ.get('ISU4_SESSION_SECRET', 'shirokane')
 
+
 def load_config():
     global config
     config = {
-         'user_lock_threshold': int(os.environ.get('ISU4_USER_LOCK_THRESHOLD', 3)),
-         'ip_ban_threshold': int(os.environ.get('ISU4_IP_BAN_THRESHOLD', 10))
+        'user_lock_threshold': int(os.environ.get('ISU4_USER_LOCK_THRESHOLD', 3)),
+        'ip_ban_threshold': int(os.environ.get('ISU4_IP_BAN_THRESHOLD', 10))
     }
     return config
 
-def connect_db():
-    host = os.environ.get('ISU4_DB_HOST', 'localhost')
-    port = int(os.environ.get('ISU4_DB_PORT', '3306'))
-    dbname = os.environ.get('ISU4_DB_NAME', 'isu4_qualifier')
-    username = os.environ.get('ISU4_DB_USER', 'root')
-    password = os.environ.get('ISU4_DB_PASSWORD', '')
-    db = MySQLdb.connect(host=host, port=port, db=dbname, user=username, passwd=password, cursorclass=DictCursor, charset='utf8')
-    return db
 
 def connect_redis():
     r = redis.StrictRedis(host='localhost', port=6379, db=0)
     return r
-
-def get_db():
-    top = _app_ctx_stack.top
-    if not hasattr(top, 'database'):
-        top.database = connect_db()
-    return top.database
 
 
 def get_redis():
@@ -65,6 +50,19 @@ def _ip_key(ip):
 
 
 def load_data():
+    def connect_db():
+        import MySQLdb
+        from MySQLdb.cursors import DictCursor
+
+        host = os.environ.get('ISU4_DB_HOST', 'localhost')
+        port = int(os.environ.get('ISU4_DB_PORT', '3306'))
+        dbname = os.environ.get('ISU4_DB_NAME', 'isu4_qualifier')
+        username = os.environ.get('ISU4_DB_USER', 'root')
+        password = os.environ.get('ISU4_DB_PASSWORD', '')
+        db = MySQLdb.connect(host=host, port=port, db=dbname, user=username,
+                             passwd=password, cursorclass=DictCursor, charset='utf8')
+        return db
+
     r = connect_redis()
     r.flushall()
 
@@ -73,7 +71,8 @@ def load_data():
     cur = connect_db().cursor()
     cur.execute('SELECT * FROM login_log')
     for row in cur.fetchall():
-        login_log(bool(row['succeeded']), row['login'], row['user_id'], row['ip'], row['created_at'], r)
+        login_log(bool(row['succeeded']), row['login'], row['user_id'],
+                  row['ip'], row['created_at'], r)
 
     cur.close()
 
@@ -117,41 +116,15 @@ def login_log(succeeded, login, user_id=None, ip=None, now=None, r=None):
 
         ip_key = _ip_key(ip)
         r.hincrby(ip_key, 'failure', 1)
-        #print('mark user failure')
     else:
         ip_key = _ip_key(ip)
         r.hincrby(ip_key, 'failure', 1)
-        #print('mark ip failure')
 
-
-#def login_log(succeeded, login, user_id=None):
-#    print('login_log: ' + str(succeeded) + ', ' + login + ', ' + str(user_id))
-#    db = get_db()
-#    cur = db.cursor()
-#    cur.execute(
-#        'INSERT INTO login_log (`created_at`, `user_id`, `login`, `ip`, `succeeded`) VALUES (NOW(),%s,%s,%s,%s)',
-#        (user_id, login, request.remote_addr, 1 if succeeded else 0)
-#    )
-#    cur.close()
-#    db.commit()
 
 def user_locked(user):
     if not user:
         return None
     return int(user.get('failure', 0)) >= config['user_lock_threshold']
-    #r = get_redis()
-    #key = _user_key(user['login'])
-
-    #return int(r.hget(key, 'failure') or 0) >= config['user_lock_threshold']
-
-    #cur = get_db().cursor()
-    #cur.execute(
-    #    'SELECT COUNT(1) AS failures FROM login_log WHERE user_id = %s AND id > IFNULL((select id from login_log where user_id = %s AND succeeded = 1 ORDER BY id DESC LIMIT 1), 0);',
-    #    (user['id'], user['id'])
-    #)
-    #log = cur.fetchone()
-    #cur.close()
-    #return config['user_lock_threshold'] <= log['failures']
 
 
 def ip_banned():
@@ -161,21 +134,7 @@ def ip_banned():
     return int(r.hget(key, 'failure') or 0) >= config['ip_ban_threshold']
 
 
-    #global config
-    #cur = get_db().cursor()
-    #cur.execute(
-    #    'SELECT COUNT(1) AS failures FROM login_log WHERE ip = %s AND id > IFNULL((select id from login_log where ip = %s AND succeeded = 1 ORDER BY id DESC LIMIT 1), 0)',
-    #    (request.remote_addr, request.remote_addr)
-    #)
-    #log = cur.fetchone()
-    #cur.close()
-    #return config['ip_ban_threshold'] <= log['failures']
-
 def attempt_login(login, password):
-    #cur = get_db().cursor()
-    #cur.execute('SELECT * FROM users WHERE login=%s', (login,))
-    #user = cur.fetchone()
-    #cur.close()
     r = get_redis()
     user_key = _user_key(login)
     user = r.hgetall(user_key) or None
@@ -191,7 +150,6 @@ def attempt_login(login, password):
         login_log(False, login, user['id'])
         return [None, 'locked']
 
-    #if user and calculate_password_hash(password, user['salt']) == user['password_hash']:
     if user and password == user['passwd']:
         last_login = login_log(True, login, user['id'])
         session['user_login'] = login
@@ -205,108 +163,23 @@ def attempt_login(login, password):
         login_log(False, login)
         return [None, 'wrong_login']
 
-#def current_user():
-#    if not session['user_id']:
-#        return None
-#    cur = get_db().cursor()
-#    cur.execute('SELECT * FROM users WHERE id=%s', (session['user_id'],))
-#    user = cur.fetchone()
-#    cur.close()
-#    if user:
-#        return user
-#    else:
-#        return None
-#
-#def last_login():
-#    user = current_user()
-#    if not user:
-#        return None
-#
-#    cur = get_db().cursor()
-#    cur.execute(
-#        'SELECT * FROM login_log WHERE succeeded = 1 AND user_id = %s ORDER BY id DESC LIMIT 2',
-#        (user['id'],)
-#    )
-#    rows = cur.fetchall()
-#    cur.close()
-#    return rows[-1]
-#
-#def banned_ips():
-#    global config
-#    threshold = config['ip_ban_threshold']
-#
-#    cur = get_db().cursor()
-#    cur.execute(
-#        'SELECT ip FROM (SELECT ip, MAX(succeeded) as max_succeeded, COUNT(1) as cnt FROM login_log GROUP BY ip) AS t0 WHERE t0.max_succeeded = 0 AND t0.cnt >= %s',
-#        (threshold,)
-#    )
-#    not_succeeded = cur.fetchall()
-#    ips = map(lambda x: x['ip'], not_succeeded)
-#
-#    cur.execute('SELECT ip, MAX(id) AS last_login_id FROM login_log WHERE succeeded = 1 GROUP by ip')
-#    last_succeeds = cur.fetchall()
-#
-#    for row in last_succeeds:
-#        cur.execute('SELECT COUNT(1) AS cnt FROM login_log WHERE ip = %s AND %s < id', (row['ip'], row['last_login_id']))
-#        count = cur.fetchone()['cnt']
-#        if threshold <= count:
-#            ips.append(row['ip'])
-#
-#    cur.close()
-#    return ips
-#
-#def locked_users():
-#    global config
-#    threshold = config['user_lock_threshold']
-#
-#    cur = get_db().cursor()
-#    cur.execute(
-#        'SELECT user_id, login FROM (SELECT user_id, login, MAX(succeeded) as max_succeeded, COUNT(1) as cnt FROM login_log GROUP BY user_id) AS t0 WHERE t0.user_id IS NOT NULL AND t0.max_succeeded = 0 AND t0.cnt >= %s',
-#        (threshold,)
-#    )
-#    not_succeeded = cur.fetchall()
-#    ips = map(lambda x: x['login'], not_succeeded)
-#
-#    cur.execute('SELECT user_id, login, MAX(id) AS last_login_id FROM login_log WHERE user_id IS NOT NULL AND succeeded = 1 GROUP BY user_id')
-#    last_succeeds = cur.fetchall()
-#
-#    for row in last_succeeds:
-#        cur.execute('SELECT COUNT(1) AS cnt FROM login_log WHERE user_id = %s AND %s < id', (row['user_id'], row['last_login_id']))
-#        count = cur.fetchone()['cnt']
-#        if threshold <= count:
-#            ips.append(row['login'])
-#
-#    cur.close()
-#    return ips
-
 
 def get_ban_report():
     banned_ips = []
     locked_users = []
-    locked_user_ids = []
-    unknown_keys = []
 
     r = get_redis()
     for key in r.keys():
         if ':' not in key:
-            unknown_keys.append(key)
             continue
         key_type, key_id = key.split(':')
 
         if key_type == 'U':
             if int(r.hget(key, 'failure')) >= config['user_lock_threshold']:
                 locked_users.append(key_id)
-                #locked_user_ids.append(key_id)
         elif key_type == 'IP':
             if int(r.hget(key, 'failure')) >= config['ip_ban_threshold']:
                 banned_ips.append(key_id)
-        else:
-            unknown_keys.append(key)
-
-    #cur = get_db().cursor()
-    #cur.execute('SELECT login FROM users WHERE id in ({0})'.format(','.join(locked_user_ids)))
-    #for row in cur.fetchall():
-    #    locked_users.append(row['login'])
 
     return {'banned_ips': banned_ips, 'locked_users': locked_users}
 
@@ -314,6 +187,7 @@ def get_ban_report():
 @app.route('/')
 def index():
     return render_template('index.html')
+
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -333,28 +207,19 @@ def login():
             flash('Wrong username or password')
         return redirect(url_for('index'))
 
+
 @app.route('/mypage')
 def mypage():
     if session['user_id']:
-        #user = {'login': session['login']}
-        #last_login = {'created_at': session['last_login_at', 'ip': session['last_login_ip']}
-        #return render_template('mypage.html', user=user, last_login=last_login())
         return render_template('mypage.html', session=session)
     else:
         flash('You must be logged in')
         return redirect(url_for('index'))
 
-    #user = current_user()
-    #if user:
-    #    return render_template('mypage.html', user=user, last_login=last_login())
-    #else:
-    #    flash('You must be logged in')
-    #    return redirect(url_for('index'))
 
 @app.route('/report')
 def report():
     response = jsonify(get_ban_report())
-    #response = jsonify({ 'banned_ips': banned_ips(), 'locked_users': locked_users() })
     response.status_code = 200
     return response
 
@@ -368,4 +233,3 @@ if __name__ == '__main__':
         app.run(debug=1, host='0.0.0.0', port=port)
 else:
     load_config()
-
