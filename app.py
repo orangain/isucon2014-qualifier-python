@@ -1,5 +1,6 @@
 import MySQLdb
 from MySQLdb.cursors import DictCursor
+import redis
 
 from flask import (
     Flask, request, redirect, session, url_for, flash, jsonify,
@@ -8,7 +9,8 @@ from flask import (
 from werkzeug.contrib.fixers import ProxyFix
 
 import os, hashlib
-from datetime import date
+from datetime import date, datetime
+import time
 
 config = {}
 app = Flask(__name__, static_url_path='')
@@ -32,48 +34,105 @@ def connect_db():
     db = MySQLdb.connect(host=host, port=port, db=dbname, user=username, passwd=password, cursorclass=DictCursor, charset='utf8')
     return db
 
+def connect_redis():
+    r = redis.StrictRedis(host='localhost', port=6379, db=0)
+    return r
+
 def get_db():
     top = _app_ctx_stack.top
     if not hasattr(top, 'database'):
         top.database = connect_db()
     return top.database
 
+
+def get_redis():
+    top = _app_ctx_stack.top
+    if not hasattr(top, 'redis'):
+        top.redis = connect_redis()
+    return top.redis
+
+
 def calculate_password_hash(password, salt):
     return hashlib.sha256(password + ':' + salt).hexdigest()
 
+
+def _user_key(user_id):
+    return 'U:{0}'.format(user_id)
+
+
+def _ip_key(ip):
+    return 'IP:{0}'.format(ip)
+
+
 def login_log(succeeded, login, user_id=None):
     print('login_log: ' + str(succeeded) + ', ' + login + ', ' + str(user_id))
-    db = get_db()
-    cur = db.cursor()
-    cur.execute(
-        'INSERT INTO login_log (`created_at`, `user_id`, `login`, `ip`, `succeeded`) VALUES (NOW(),%s,%s,%s,%s)',
-        (user_id, login, request.remote_addr, 1 if succeeded else 0)
-    )
-    cur.close()
-    db.commit()
+    r = get_redis()
+    ip = request.remote_addr
+    if succeeded:
+        user_key = _user_key(user_id)
+        last_login = r.hgetall(user_key)
+        current_login = dict(last_login)
+        current_login['failure'] = 0
+        current_login['last_login_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # time.time()
+        current_login['last_login_ip'] = ip
+        r.hmset(user_key, current_login)
+
+        ip_key = _ip_key(ip)
+        r.hset(ip_key, 'failure', 0)
+        return last_login
+    elif user_id:
+        key = _user_key(user_id)
+        r.hincrby(key, 'failure', 1)
+    else:
+        key = _ip_key(ip)
+        r.hincrby(key, 'failure', 1)
+
+
+#def login_log(succeeded, login, user_id=None):
+#    print('login_log: ' + str(succeeded) + ', ' + login + ', ' + str(user_id))
+#    db = get_db()
+#    cur = db.cursor()
+#    cur.execute(
+#        'INSERT INTO login_log (`created_at`, `user_id`, `login`, `ip`, `succeeded`) VALUES (NOW(),%s,%s,%s,%s)',
+#        (user_id, login, request.remote_addr, 1 if succeeded else 0)
+#    )
+#    cur.close()
+#    db.commit()
 
 def user_locked(user):
     if not user:
         return None
-    cur = get_db().cursor()
-    cur.execute(
-        'SELECT COUNT(1) AS failures FROM login_log WHERE user_id = %s AND id > IFNULL((select id from login_log where user_id = %s AND succeeded = 1 ORDER BY id DESC LIMIT 1), 0);',
-        (user['id'], user['id'])
-    )
-    log = cur.fetchone()
-    cur.close()
-    return config['user_lock_threshold'] <= log['failures']
+    r = get_redis()
+    key = _user_key(user['id'])
+
+    return int(r.hget(key, 'failure') or 0) >= config['user_lock_threshold']
+
+    #cur = get_db().cursor()
+    #cur.execute(
+    #    'SELECT COUNT(1) AS failures FROM login_log WHERE user_id = %s AND id > IFNULL((select id from login_log where user_id = %s AND succeeded = 1 ORDER BY id DESC LIMIT 1), 0);',
+    #    (user['id'], user['id'])
+    #)
+    #log = cur.fetchone()
+    #cur.close()
+    #return config['user_lock_threshold'] <= log['failures']
+
 
 def ip_banned():
-    global config
-    cur = get_db().cursor()
-    cur.execute(
-        'SELECT COUNT(1) AS failures FROM login_log WHERE ip = %s AND id > IFNULL((select id from login_log where ip = %s AND succeeded = 1 ORDER BY id DESC LIMIT 1), 0)',
-        (request.remote_addr, request.remote_addr)
-    )
-    log = cur.fetchone()
-    cur.close()
-    return config['ip_ban_threshold'] <= log['failures']
+    r = get_redis()
+    key = _ip_key(request.remote_addr)
+
+    return int(r.hget(key, 'failure') or 0) >= config['ip_ban_threshold']
+
+
+    #global config
+    #cur = get_db().cursor()
+    #cur.execute(
+    #    'SELECT COUNT(1) AS failures FROM login_log WHERE ip = %s AND id > IFNULL((select id from login_log where ip = %s AND succeeded = 1 ORDER BY id DESC LIMIT 1), 0)',
+    #    (request.remote_addr, request.remote_addr)
+    #)
+    #log = cur.fetchone()
+    #cur.close()
+    #return config['ip_ban_threshold'] <= log['failures']
 
 def attempt_login(login, password):
     cur = get_db().cursor()
@@ -93,7 +152,10 @@ def attempt_login(login, password):
         return [None, 'locked']
 
     if user and calculate_password_hash(password, user['salt']) == user['password_hash']:
-        login_log(True, login, user['id'])
+        last_login = login_log(True, login, user['id'])
+        session['user_login'] = login
+        session['last_login_at'] = last_login.get('last_login_at')
+        session['last_login_ip'] = last_login.get('last_login_ip')
         return [user, None]
     elif user:
         login_log(False, login, user['id'])
@@ -200,12 +262,21 @@ def login():
 
 @app.route('/mypage')
 def mypage():
-    user = current_user()
-    if user:
-        return render_template('mypage.html', user=user, last_login=last_login())
+    if session['user_id']:
+        #user = {'login': session['login']}
+        #last_login = {'created_at': session['last_login_at', 'ip': session['last_login_ip']}
+        #return render_template('mypage.html', user=user, last_login=last_login())
+        return render_template('mypage.html', session=session)
     else:
         flash('You must be logged in')
         return redirect(url_for('index'))
+
+    #user = current_user()
+    #if user:
+    #    return render_template('mypage.html', user=user, last_login=last_login())
+    #else:
+    #    flash('You must be logged in')
+    #    return redirect(url_for('index'))
 
 @app.route('/report')
 def report():
