@@ -26,7 +26,8 @@ def load_config():
 
 
 def connect_redis():
-    r = redis.StrictRedis(host='localhost', port=6379, db=0)
+    #r = redis.StrictRedis(host='localhost', port=6379, db=0)
+    r = redis.StrictRedis(unix_socket_path='/tmp/redis.sock', db=0)
     return r
 
 
