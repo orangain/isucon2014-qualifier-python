@@ -98,7 +98,7 @@ def login_log(succeeded, login, user_id=None, ip=None, now=None, r=None):
         ip = request.remote_addr
     if now is None:
         now = datetime.now()
-    print('login_log: ' + str(succeeded) + ', ' + login + ', ' + str(user_id) + ', ' + ip)
+    #print('login_log: ' + str(succeeded) + ', ' + login + ', ' + str(user_id) + ', ' + ip)
     if succeeded:
         user_key = _user_key(login)
         last_login = r.hgetall(user_key)
@@ -199,7 +199,7 @@ def login():
         session['user_id'] = user['id']
         return redirect(url_for('mypage'))
     else:
-        print('err = ' + err)
+        #print('err = ' + err)
         if err == 'locked':
             flash('This account is locked.')
         elif err == 'banned':
