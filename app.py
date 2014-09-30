@@ -20,6 +20,8 @@ app = Flask(__name__, static_url_path='')
 app.wsgi_app = ProxyFix(app.wsgi_app)
 app.secret_key = os.environ.get('ISU4_SESSION_SECRET', 'shirokane')
 
+PASSWORDS = {}
+
 
 def load_config():
     global config
@@ -28,6 +30,11 @@ def load_config():
         'ip_ban_threshold': int(os.environ.get('ISU4_IP_BAN_THRESHOLD', 10))
     }
     return config
+
+
+def init_data():
+    for id, login, password, salt, password_hash in load_users():
+        PASSWORDS[login] = password
 
 
 def connect_redis():
@@ -104,7 +111,14 @@ def load_data():
     r = connect_redis()
     r.flushall()
 
-    load_users(r)
+    for id, login, password, salt, password_hash in load_users():
+        user_key = _user_key(login)
+        r.hmset(user_key, {
+            'id': id,
+            'login': login,
+            'passwd': password,
+            'failure': 0,
+        })
 
     cur = connect_db().cursor()
     cur.execute('SELECT * FROM login_log')
@@ -115,22 +129,16 @@ def load_data():
     cur.close()
 
 
-def load_users(r):
+def load_users():
     with open('/home/isucon/sql/dummy_users.tsv') as f:
         for line in f:
             id, login, password, salt, password_hash = line.rstrip().split('\t')
-            user_key = _user_key(login)
-            r.hmset(user_key, {
-                'id': id,
-                'login': login,
-                'passwd': password,
-                'failure': 0,
-            })
+            yield id, login, password, salt, password_hash
 
 
 def user_locked(user):
-    if not user:
-        return None
+    #if not user:
+    #    return None
     return int(user.get('failure', 0)) >= config['user_lock_threshold']
 
 
@@ -144,17 +152,33 @@ def ip_banned():
 def attempt_login(login, password):
     r = get_redis()
     user_key = _user_key(login)
-    user = r.hgetall(user_key) or None
+    #user = r.hgetall(user_key) or None
+    user_password = PASSWORDS.get(login)
     ip = request.remote_addr
+    ip_key = _ip_key(ip)
+
+    #def ip_banned():
+    #    return int(r.hget(ip_key, 'failure') or 0) >= config['ip_ban_threshold']
 
     if ip_banned():
-        if user:
-            user_key = _user_key(login)
+        if user_password:
+            #user_key = _user_key(login)
             r.hincrby(user_key, 'failure', 1)
         return [None, 'banned']
 
+    if not user_password:
+        r.hincrby(ip_key, 'failure', 1)
+        return [None, 'wrong_login']
+
+    # when user exists
+
+    user = r.hgetall(user_key) or None
+
+    #def user_locked(user):
+    #    return int(user.get('failure', 0)) >= config['user_lock_threshold']
+
     if user_locked(user):
-        ip_key = _ip_key(ip)
+        #ip_key = _ip_key(ip)
         r.hincrby(ip_key, 'failure', 1)
         return [None, 'locked']
 
@@ -173,18 +197,19 @@ def attempt_login(login, password):
         pipe.hset(ip_key, 'failure', 0)
         pipe.execute()
         return [user, None]
-    elif user:
+    #elif user:
+    else:
         pipe = r.pipeline()
         pipe.hincrby(user_key, 'failure', 1)
 
-        ip_key = _ip_key(ip)
+        #ip_key = _ip_key(ip)
         pipe.hincrby(ip_key, 'failure', 1)
         pipe.execute()
         return [None, 'wrong_password']
-    else:
-        ip_key = _ip_key(ip)
-        r.hincrby(ip_key, 'failure', 1)
-        return [None, 'wrong_login']
+    #else:
+    #    ip_key = _ip_key(ip)
+    #    r.hincrby(ip_key, 'failure', 1)
+    #    return [None, 'wrong_login']
 
 
 def get_ban_report():
@@ -258,3 +283,4 @@ if __name__ == '__main__':
         app.run(debug=1, host='0.0.0.0', port=port)
 else:
     load_config()
+    init_data()
