@@ -200,6 +200,38 @@ def load_data():
                              passwd=password, cursorclass=DictCursor, charset='utf8')
         return db
 
+    def login_log(succeeded, login, user_id=None, ip=None, now=None, r=None):
+        if r is None:
+            r = get_redis()
+        if ip is None:
+            ip = request.remote_addr
+        if now is None:
+            now = datetime.now()
+        #print('login_log: ' + str(succeeded) + ', ' + login + ', ' + str(user_id) + ', ' + ip)
+        if succeeded:
+            user_key = _user_key(login)
+            last_login = r.hgetall(user_key)
+            current_login = dict(last_login)
+            current_login['failure'] = 0
+            current_login['last_login_at'] = now.strftime("%Y-%m-%d %H:%M:%S")
+            current_login['last_login_ip'] = ip
+            r.hmset(user_key, current_login)
+
+            ip_key = _ip_key(ip)
+            r.hset(ip_key, 'failure', 0)
+            return last_login
+        elif user_id:
+            pipe = r.pipeline()
+            user_key = _user_key(login)
+            pipe.hincrby(user_key, 'failure', 1)
+
+            ip_key = _ip_key(ip)
+            pipe.hincrby(ip_key, 'failure', 1)
+            pipe.execute()
+        else:
+            ip_key = _ip_key(ip)
+            r.hincrby(ip_key, 'failure', 1)
+
     r = connect_redis()
     r.flushall()
 
@@ -227,37 +259,6 @@ def load_users(r):
             })
 
 
-def login_log(succeeded, login, user_id=None, ip=None, now=None, r=None):
-    if r is None:
-        r = get_redis()
-    if ip is None:
-        ip = request.remote_addr
-    if now is None:
-        now = datetime.now()
-    #print('login_log: ' + str(succeeded) + ', ' + login + ', ' + str(user_id) + ', ' + ip)
-    if succeeded:
-        user_key = _user_key(login)
-        last_login = r.hgetall(user_key)
-        current_login = dict(last_login)
-        current_login['failure'] = 0
-        current_login['last_login_at'] = now.strftime("%Y-%m-%d %H:%M:%S")
-        current_login['last_login_ip'] = ip
-        r.hmset(user_key, current_login)
-
-        ip_key = _ip_key(ip)
-        r.hset(ip_key, 'failure', 0)
-        return last_login
-    elif user_id:
-        user_key = _user_key(login)
-        r.hincrby(user_key, 'failure', 1)
-
-        ip_key = _ip_key(ip)
-        r.hincrby(ip_key, 'failure', 1)
-    else:
-        ip_key = _ip_key(ip)
-        r.hincrby(ip_key, 'failure', 1)
-
-
 def user_locked(user):
     if not user:
         return None
@@ -275,29 +276,45 @@ def attempt_login(login, password):
     r = get_redis()
     user_key = _user_key(login)
     user = r.hgetall(user_key) or None
+    ip = request.remote_addr
 
     if ip_banned():
         if user:
-            login_log(False, login, user['id'])
-        else:
-            login_log(False, login)
+            user_key = _user_key(login)
+            r.hincrby(user_key, 'failure', 1)
         return [None, 'banned']
 
     if user_locked(user):
-        login_log(False, login, user['id'])
+        ip_key = _ip_key(ip)
+        r.hincrby(ip_key, 'failure', 1)
         return [None, 'locked']
 
     if user and password == user['passwd']:
-        last_login = login_log(True, login, user['id'])
-        session['user_login'] = login
-        session['last_login_at'] = last_login.get('last_login_at')
-        session['last_login_ip'] = last_login.get('last_login_ip')
+        session['login'] = login
+        session['last_login_at'] = user.get('last_login_at')
+        session['last_login_ip'] = user.get('last_login_ip')
+        user['failure'] = 0
+        user['last_login_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        user['last_login_ip'] = ip
+
+        pipe = r.pipeline()
+        pipe.hmset(user_key, user)
+
+        ip_key = _ip_key(ip)
+        pipe.hset(ip_key, 'failure', 0)
+        pipe.execute()
         return [user, None]
     elif user:
-        login_log(False, login, user['id'])
+        pipe = r.pipeline()
+        pipe.hincrby(user_key, 'failure', 1)
+
+        ip_key = _ip_key(ip)
+        pipe.hincrby(ip_key, 'failure', 1)
+        pipe.execute()
         return [None, 'wrong_password']
     else:
-        login_log(False, login)
+        ip_key = _ip_key(ip)
+        r.hincrby(ip_key, 'failure', 1)
         return [None, 'wrong_login']
 
 
