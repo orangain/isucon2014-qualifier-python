@@ -168,7 +168,8 @@ def attempt_login(login, password):
 
     if not user_password:
         r.hincrby(ip_key, 'failure', 1)
-        return [None, 'wrong_login']
+        #return [None, 'wrong_login']
+        return [None, 'wrong_login_or_password']
 
     # when user exists
 
@@ -205,7 +206,8 @@ def attempt_login(login, password):
         #ip_key = _ip_key(ip)
         pipe.hincrby(ip_key, 'failure', 1)
         pipe.execute()
-        return [None, 'wrong_password']
+        #return [None, 'wrong_password']
+        return [None, 'wrong_login_or_password']
     #else:
     #    ip_key = _ip_key(ip)
     #    r.hincrby(ip_key, 'failure', 1)
@@ -235,7 +237,17 @@ def get_ban_report():
 @app.route('/')
 def index():
     #return render_template('index.html')
-    return Response(render_index())
+    err = request.args.get('err')
+    if err:
+        if err == 'locked':
+            error_message = 'This account is locked.'
+        elif err == 'banned':
+            error_message = "You're banned."
+        else:
+            error_message = 'Wrong username or password'
+    else:
+        error_message = None
+    return Response(render_index(error_message))
 
 
 @app.route('/login', methods=['POST'])
@@ -248,13 +260,15 @@ def login():
         return redirect(url_for('mypage'))
     else:
         #print('err = ' + err)
-        if err == 'locked':
-            flash('This account is locked.')
-        elif err == 'banned':
-            flash("You're banned.")
-        else:
-            flash('Wrong username or password')
-        return redirect(url_for('index'))
+        return redirect(url_for('index') + '?err=' + err)
+
+        #if err == 'locked':
+        #    flash('This account is locked.')
+        #elif err == 'banned':
+        #    flash("You're banned.")
+        #else:
+        #    flash('Wrong username or password')
+        #return redirect(url_for('index'))
 
 
 @app.route('/mypage')

@@ -1,9 +1,9 @@
 # coding: utf-8
 
-from flask import session, get_flashed_messages
+from flask import session
 
 
-def render_index():
+def render_index(error_message):
     pieces = []
     pieces.append("""
 <!DOCTYPE html>
@@ -36,10 +36,9 @@ def render_index():
 </div>
 """)
 
-    messages = get_flashed_messages()
-    if messages:
+    if error_message:
         pieces.append('<div id="notice-message" class="alert alert-danger" role="alert">')
-        pieces.append(messages[0].encode('utf-8'))
+        pieces.append(error_message)
         pieces.append('</div>')
 
     pieces.append("""
