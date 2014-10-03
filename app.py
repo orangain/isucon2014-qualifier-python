@@ -285,6 +285,7 @@ def mypage():
 def report():
     response = jsonify(get_ban_report())
     response.status_code = 200
+    response.headers['Cache-Control'] = 'no-cache, max-age=0'
     return response
 
 if __name__ == '__main__':
