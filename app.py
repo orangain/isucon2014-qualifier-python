@@ -21,6 +21,8 @@ app.wsgi_app = ProxyFix(app.wsgi_app)
 app.secret_key = os.environ.get('ISU4_SESSION_SECRET', 'shirokane')
 
 PASSWORDS = {}
+BANNED_IPS = set()
+LOCKED_USERS = set()
 
 
 def load_config():
@@ -35,6 +37,14 @@ def load_config():
 def init_data():
     for id, login, password, salt, password_hash in load_users():
         PASSWORDS[login] = password
+
+    # There is no banned ip at the initial time
+    with open('/home/isucon/sql/dummy_users_used.tsv') as f:
+        for line in f:
+            id, login, failure = line.rstrip().split('\t')
+            if int(failure) >= config['user_lock_threshold']:
+                user_key = _user_key(login)
+                LOCKED_USERS.add(user_key)
 
 
 def connect_redis():
@@ -136,17 +146,31 @@ def load_users():
             yield id, login, password, salt, password_hash
 
 
-def user_locked(user):
+def user_locked(r, user_key):
     #if not user:
     #    return None
-    return int(user.get('failure', 0)) >= config['user_lock_threshold']
+    #return int(user.get('failure', 0)) >= config['user_lock_threshold']
+    if user_key in LOCKED_USERS:
+        return True
+
+    locked = int(r.hget(user_key, 'failure') or 0) >= config['user_lock_threshold']
+    if locked:
+        LOCKED_USERS.add(user_key)
+
+    return locked
 
 
-def ip_banned():
-    r = get_redis()
-    key = _ip_key(request.remote_addr)
+def ip_banned(r, ip_key):
+    #r = get_redis()
+    #key = _ip_key(request.remote_addr)
+    if ip_key in BANNED_IPS:
+        return True
 
-    return int(r.hget(key, 'failure') or 0) >= config['ip_ban_threshold']
+    banned = int(r.hget(ip_key, 'failure') or 0) >= config['ip_ban_threshold']
+    if banned:
+        BANNED_IPS.add(ip_key)
+
+    return banned
 
 
 def attempt_login(login, password):
@@ -160,7 +184,7 @@ def attempt_login(login, password):
     #def ip_banned():
     #    return int(r.hget(ip_key, 'failure') or 0) >= config['ip_ban_threshold']
 
-    if ip_banned():
+    if ip_banned(r, ip_key):
         if user_password:
             #user_key = _user_key(login)
             r.hincrby(user_key, 'failure', 1)
@@ -173,28 +197,32 @@ def attempt_login(login, password):
 
     # when user exists
 
-    user = r.hgetall(user_key) or None
+    #user = r.hgetall(user_key) or None
 
     #def user_locked(user):
     #    return int(user.get('failure', 0)) >= config['user_lock_threshold']
 
-    if user_locked(user):
+    if user_locked(r, user_key):
         #ip_key = _ip_key(ip)
         r.hincrby(ip_key, 'failure', 1)
         return [None, 'locked']
 
-    if user and password == user['passwd']:
+    if user_password and password == user_password:
+        user = r.hgetall(user_key) or None
         session['login'] = login
         session['last_login_at'] = user.get('last_login_at')
         session['last_login_ip'] = user.get('last_login_ip')
-        user['failure'] = 0
-        user['last_login_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        user['last_login_ip'] = ip
+        #user['failure'] = 0
+        #user['last_login_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        #user['last_login_ip'] = ip
 
         pipe = r.pipeline()
-        pipe.hmset(user_key, user)
+        pipe.hset(user_key, 'failure', 0)
+        pipe.hset(user_key, 'last_login_at', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        pipe.hset(user_key, 'last_login_ip', ip)
+        #pipe.hmset(user_key, user)
 
-        ip_key = _ip_key(ip)
+        #ip_key = _ip_key(ip)
         pipe.hset(ip_key, 'failure', 0)
         pipe.execute()
         return [user, None]
@@ -214,11 +242,13 @@ def attempt_login(login, password):
     #    return [None, 'wrong_login']
 
 
-def get_ban_report():
+def get_ban_report(r=None):
     banned_ips = []
     locked_users = []
 
-    r = get_redis()
+    if r is None:
+        r = get_redis()
+
     for key in r.keys():
         if ':' not in key:
             continue
@@ -288,12 +318,26 @@ def report():
     response.headers['Cache-Control'] = 'no-cache, max-age=0'
     return response
 
-if __name__ == '__main__':
-    import sys
-    if len(sys.argv) >= 2 and sys.argv[1] == 'load':
+
+def execute_command(command):
+    if command == 'load':
         load_data()
+    elif command == 'initial_banned_ips':
+        report = get_ban_report(connect_redis())
+        for ip in report['banned_ips']:
+            print(ip)
+    elif command == 'initial_locked_users':
+        report = get_ban_report(connect_redis())
+        for user in report['locked_users']:
+            print(user)
+
+
+if __name__ == '__main__':
+    load_config()
+    import sys
+    if len(sys.argv) >= 2:
+        execute_command(sys.argv[1])
     else:
-        load_config()
         port = int(os.environ.get('PORT', '5000'))
         app.run(debug=1, host='0.0.0.0', port=port)
 else:
