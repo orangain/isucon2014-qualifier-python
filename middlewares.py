@@ -4,7 +4,7 @@ from __future__ import print_function, unicode_literals
 
 import sys
 import time
-import os.path
+import os
 
 try:
     from cProfile import Profile
@@ -48,7 +48,7 @@ class ProfilerMiddleware(object):
         if self._profile_dir is not None:
             prof_filename = os.path.join(
                 self._profile_dir,
-                '%s.%s.%06dms.%d.%f.%d.prof' % (
+                '%s.%s.%06dms.%f.%d.prof' % (
                     environ['REQUEST_METHOD'],
                     environ.get('PATH_INFO').strip('/').replace('/', '.') or 'root',
                     elapsed * 1000.0,
