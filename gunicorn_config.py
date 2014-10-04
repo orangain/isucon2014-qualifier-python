@@ -4,4 +4,4 @@ workers = 10
 keepalive = 60
 worker_class = "meinheld.gmeinheld.MeinheldWorker"
 #accesslog = '-'
-#errorlog = '-'
+errorlog = '-'
