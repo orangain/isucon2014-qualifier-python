@@ -4,7 +4,6 @@ import os
 import hashlib
 from datetime import datetime
 import json
-import base64
 
 import redis
 from bottle import Bottle, request, response, redirect, run
@@ -195,7 +194,7 @@ def attempt_login(login, password):
 
     if user_password and password == user_password:
         response.set_cookie('login', login)
-        response.set_cookie('last_login_at', base64.b64encode(str(user.get('last_login_at'))))
+        response.set_cookie('last_login_at', str(user.get('last_login_at')).replace(' ', '+'))
         response.set_cookie('last_login_ip', str(user.get('last_login_ip')))
 
         write_pipe = r.pipeline()
@@ -267,7 +266,7 @@ def login():
 def mypage():
     if request.get_cookie('login'):
         return render_mypage({
-            'last_login_at': base64.b64decode(request.get_cookie('last_login_at')),
+            'last_login_at': str(request.get_cookie('last_login_at')).replace('+', ' '),
             'last_login_ip': request.get_cookie('last_login_ip'),
             'login': request.get_cookie('login'),
         })
