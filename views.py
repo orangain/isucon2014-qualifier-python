@@ -1,23 +1,30 @@
 # coding: utf-8
 
 
-def render_index(error_message):
-    pieces = []
-    pieces.append("""
+HEAD = """
 <!DOCTYPE html>
 <html>
   <head>
     <meta charset="UTF-8">
-    <link rel="stylesheet" href="/stylesheets/bootstrap.min.css">
-    <link rel="stylesheet" href="/stylesheets/bootflat.min.css">
-    <link rel="stylesheet" href="/stylesheets/isucon-bank.css">
+    <script>
+    document.write('<link rel="stylesheet" href="/stylesheets/bootstrap.min.css">');
+    document.write('<link rel="stylesheet" href="/stylesheets/bootflat.min.css">');
+    document.write('<link rel="stylesheet" href="/stylesheets/isucon-bank.css">');
+    </script>
     <title>isucon4</title>
   </head>
   <body>
     <div class="container">
       <h1 id="topbar">
-        <a href="/"><img src="/images/isucon-bank.png" alt="いすこん銀行 オンラインバンキングサービス"></a>
+        <a href="/"><script>document.write('<img src="/images/isucon-bank.png" alt="いすこん銀行 オンラインバンキングサービス">');</script></a>
       </h1>
+"""
+
+
+def render_index(error_message):
+    pieces = []
+    pieces.append(HEAD)
+    pieces.append("""
 <div id="be-careful-phising" class="panel panel-danger">
   <div class="panel-heading">
     <span class="hikaru-mozi">偽画面にご注意ください！</span>
@@ -71,21 +78,7 @@ def render_index(error_message):
 
 
 def render_mypage(session):
-    return ''.join(["""
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="UTF-8">
-    <link rel="stylesheet" href="/stylesheets/bootstrap.min.css">
-    <link rel="stylesheet" href="/stylesheets/bootflat.min.css">
-    <link rel="stylesheet" href="/stylesheets/isucon-bank.css">
-    <title>isucon4</title>
-  </head>
-  <body>
-    <div class="container">
-      <h1 id="topbar">
-        <a href="/"><img src="/images/isucon-bank.png" alt="いすこん銀行 オンラインバンキングサービス"></a>
-      </h1>
+    return ''.join([HEAD, """
 <div class="alert alert-success" role="alert">
   ログインに成功しました。<br>
   未読のお知らせが０件、残っています。
