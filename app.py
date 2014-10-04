@@ -243,7 +243,6 @@ def get_ban_report(r=None):
 
 @app.route('/')
 def index():
-    #return render_template('index.html')
     err = request.query.get('err')
     if err:
         if err == 'locked':
@@ -265,22 +264,12 @@ def login():
     if user:
         return redirect('/mypage')
     else:
-        #print('err = ' + err)
         return redirect('/?err=' + err)
-
-        #if err == 'locked':
-        #    flash('This account is locked.')
-        #elif err == 'banned':
-        #    flash("You're banned.")
-        #else:
-        #    flash('Wrong username or password')
-        #return redirect(url_for('index'))
 
 
 @app.route('/mypage')
 def mypage():
     if request.get_cookie('login'):
-        #return render_template('mypage.html', session=session)
         return render_mypage({
             'last_login_at': base64.b64decode(request.get_cookie('last_login_at')),
             'last_login_ip': request.get_cookie('last_login_ip'),
