@@ -2,24 +2,26 @@
 
 import redis
 
-from flask import (
-    Flask, request, redirect, session, url_for, flash, jsonify,
-    _app_ctx_stack, Response
-)
+from bottle import Bottle, request, response, redirect, run
+from beaker.middleware import SessionMiddleware
 from werkzeug.contrib.fixers import ProxyFix
 
 import os
 import hashlib
 from datetime import datetime
+import json
 
 from views import render_index, render_mypage
 
 
 config = {}
-app = Flask(__name__, static_url_path='')
-app.wsgi_app = ProxyFix(app.wsgi_app)
-app.secret_key = os.environ.get('ISU4_SESSION_SECRET', 'shirokane')
+app = Bottle()
 
+
+class Top(object):
+    redis = None
+
+top = Top()
 PASSWORDS = {}
 BANNED_IPS = set()
 LOCKED_USERS = set()
@@ -54,8 +56,7 @@ def connect_redis():
 
 
 def get_redis():
-    top = _app_ctx_stack.top
-    if not hasattr(top, 'redis'):
+    if top.redis is None:
         top.redis = connect_redis()
     return top.redis
 
@@ -209,9 +210,11 @@ def attempt_login(login, password):
 
     if user_password and password == user_password:
         user = r.hgetall(user_key) or None
+        session = request.environ.get('beaker.session')
         session['login'] = login
         session['last_login_at'] = user.get('last_login_at')
         session['last_login_ip'] = user.get('last_login_ip')
+        session.save()
         #user['failure'] = 0
         #user['last_login_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         #user['last_login_ip'] = ip
@@ -267,7 +270,7 @@ def get_ban_report(r=None):
 @app.route('/')
 def index():
     #return render_template('index.html')
-    err = request.args.get('err')
+    err = request.query.get('err')
     if err:
         if err == 'locked':
             error_message = 'This account is locked.'
@@ -277,20 +280,22 @@ def index():
             error_message = 'Wrong username or password'
     else:
         error_message = None
-    return Response(render_index(error_message))
+    return render_index(error_message)
 
 
-@app.route('/login', methods=['POST'])
+@app.route('/login', method='POST')
 def login():
-    login = request.form['login']
-    password = request.form['password']
+    login = request.forms['login']
+    password = request.forms['password']
     user, err = attempt_login(login, password)
     if user:
+        session = request.environ.get('beaker.session')
         session['user_id'] = user['id']
-        return redirect(url_for('mypage'))
+        session.save()
+        return redirect('/mypage')
     else:
         #print('err = ' + err)
-        return redirect(url_for('index') + '?err=' + err)
+        return redirect('/?err=' + err)
 
         #if err == 'locked':
         #    flash('This account is locked.')
@@ -303,20 +308,18 @@ def login():
 
 @app.route('/mypage')
 def mypage():
+    session = request.environ.get('beaker.session')
     if session.get('user_id'):
         #return render_template('mypage.html', session=session)
-        return Response(render_mypage())
+        return render_mypage(session)
     else:
-        flash('You must be logged in')
-        return redirect(url_for('index'))
+        return redirect('/?err=login_required')
 
 
 @app.route('/report')
 def report():
-    response = jsonify(get_ban_report())
-    response.status_code = 200
-    response.headers['Cache-Control'] = 'no-cache, max-age=0'
-    return response
+    response.set_header('Cache-Control', 'no-cache, max-age=0')
+    return json.dumps(get_ban_report())
 
 
 def execute_command(command):
@@ -332,14 +335,22 @@ def execute_command(command):
             print(user)
 
 
+app = ProxyFix(app)
+app = SessionMiddleware(app, {
+    'session.type': 'cookie',
+    'session.encrypt_key': os.environ.get('ISU4_SESSION_SECRET', 'shirokane'),
+    'session.validate_key': os.environ.get('ISU4_SESSION_SECRET', 'shirokane'),
+})
+
 if __name__ == '__main__':
     load_config()
+    init_data()
     import sys
     if len(sys.argv) >= 2:
         execute_command(sys.argv[1])
     else:
         port = int(os.environ.get('PORT', '5000'))
-        app.run(debug=1, host='0.0.0.0', port=port)
+        run(app, debug=1, host='0.0.0.0', port=port)
 else:
     load_config()
     init_data()

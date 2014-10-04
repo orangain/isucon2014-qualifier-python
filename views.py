@@ -1,7 +1,5 @@
 # coding: utf-8
 
-from flask import session
-
 
 def render_index(error_message):
     pieces = []
@@ -72,7 +70,7 @@ def render_index(error_message):
     return ''.join(pieces)
 
 
-def render_mypage():
+def render_mypage(session):
     return ''.join(["""
 <!DOCTYPE html>
 <html>
