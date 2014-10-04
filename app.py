@@ -68,6 +68,10 @@ def _user_key(user_login):
     return 'U:{0}'.format(user_login)
 
 
+def _login_key(user_login):
+    return 'L:{0}'.format(user_login)
+
+
 def _ip_key(ip):
     return 'IP:{0}'.format(ip)
 
@@ -93,42 +97,32 @@ def load_data():
             ip = request.remote_addr
         if now is None:
             now = datetime.now()
+
+        user_key = _user_key(login)
+        login_key = _login_key(login)
+        ip_key = _ip_key(ip)
         #print('login_log: ' + str(succeeded) + ', ' + login + ', ' + str(user_id) + ', ' + ip)
         if succeeded:
-            user_key = _user_key(login)
-            last_login = r.hgetall(user_key)
-            current_login = dict(last_login)
-            current_login['failure'] = 0
-            current_login['last_login_at'] = now.strftime("%Y-%m-%d %H:%M:%S")
-            current_login['last_login_ip'] = ip
-            r.hmset(user_key, current_login)
-
-            ip_key = _ip_key(ip)
-            r.hset(ip_key, 'failure', 0)
-            return last_login
+            pipe = r.pipeline()
+            pipe.set(user_key, 0)
+            pipe.hset(login_key, 'last_login_at', now.strftime("%Y-%m-%d %H:%M:%S"))
+            pipe.hset(login_key, 'last_login_ip', ip)
+            pipe.set(ip_key, 0)
+            pipe.execute()
         elif user_id:
             pipe = r.pipeline()
-            user_key = _user_key(login)
-            pipe.hincrby(user_key, 'failure', 1)
-
-            ip_key = _ip_key(ip)
-            pipe.hincrby(ip_key, 'failure', 1)
+            pipe.incr(user_key)
+            pipe.incr(ip_key)
             pipe.execute()
         else:
-            ip_key = _ip_key(ip)
-            r.hincrby(ip_key, 'failure', 1)
+            r.incr(ip_key)
 
     r = connect_redis()
     r.flushall()
 
     for id, login, password, salt, password_hash in load_users():
         user_key = _user_key(login)
-        r.hmset(user_key, {
-            'id': id,
-            'login': login,
-            'passwd': password,
-            'failure': 0,
-        })
+        r.set(user_key, 0)
 
     cur = connect_db().cursor()
     cur.execute('SELECT * FROM login_log')
@@ -146,11 +140,11 @@ def load_users():
             yield id, login, password, salt, password_hash
 
 
-def user_locked(user_key, user):
+def user_locked(user_key, failures):
     if user_key in LOCKED_USERS:
         return True
 
-    locked = int(user['failure'] or 0) >= config['user_lock_threshold']
+    locked = int(failures or 0) >= config['user_lock_threshold']
     if locked:
         LOCKED_USERS.add(user_key)
 
@@ -168,33 +162,35 @@ def ip_banned(ip_key, failures):
 def attempt_login(login, password):
     r = get_redis()
     user_key = _user_key(login)
+    login_key = _login_key(login)
     user_password = PASSWORDS.get(login)
     ip = request.remote_addr
     ip_key = _ip_key(ip)
 
     if ip_key in BANNED_IPS:
         if user_password:
-            r.hincrby(user_key, 'failure', 1)
+            r.incr(user_key)
         return [None, 'banned']
 
     read_pipe = r.pipeline()
-    read_pipe.hget(ip_key, 'failure')
-    read_pipe.hgetall(user_key)
-    ip_failures, user = read_pipe.execute()
+    read_pipe.get(ip_key)
+    read_pipe.get(user_key)
+    read_pipe.hgetall(login_key)
+    ip_failures, user_failures, user = read_pipe.execute()
 
     if ip_banned(ip_key, ip_failures):
         if user_password:
-            r.hincrby(user_key, 'failure', 1)
+            r.incr(user_key)
         return [None, 'banned']
 
     if not user_password:
-        r.hincrby(ip_key, 'failure', 1)
+        r.incr(ip_key)
         return [None, 'wrong_login_or_password']
 
     # when user exists
 
-    if user_locked(user_key, user):
-        r.hincrby(ip_key, 'failure', 1)
+    if user_locked(user_key, user_failures):
+        r.incr(ip_key)
         return [None, 'locked']
 
     if user_password and password == user_password:
@@ -203,17 +199,17 @@ def attempt_login(login, password):
         response.set_cookie('last_login_ip', str(user.get('last_login_ip')))
 
         write_pipe = r.pipeline()
-        write_pipe.hset(user_key, 'failure', 0)
-        write_pipe.hset(user_key, 'last_login_at', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        write_pipe.hset(user_key, 'last_login_ip', ip)
-        write_pipe.hset(ip_key, 'failure', 0)
+        write_pipe.set(user_key, 0)
+        write_pipe.hset(login_key, 'last_login_at', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        write_pipe.hset(login_key, 'last_login_ip', ip)
+        write_pipe.set(ip_key, 0)
         write_pipe.execute()
 
-        return [user, None]
+        return [True, None]
     else:
         write_pipe = r.pipeline()
-        write_pipe.hincrby(user_key, 'failure', 1)
-        write_pipe.hincrby(ip_key, 'failure', 1)
+        write_pipe.incr(user_key)
+        write_pipe.incr(ip_key)
         write_pipe.execute()
 
         return [None, 'wrong_login_or_password']
@@ -232,10 +228,10 @@ def get_ban_report(r=None):
         key_type, key_id = key.split(':')
 
         if key_type == 'U':
-            if int(r.hget(key, 'failure')) >= config['user_lock_threshold']:
+            if int(r.get(key)) >= config['user_lock_threshold']:
                 locked_users.append(key_id)
         elif key_type == 'IP':
-            if int(r.hget(key, 'failure')) >= config['ip_ban_threshold']:
+            if int(r.get(key)) >= config['ip_ban_threshold']:
                 banned_ips.append(key_id)
 
     return {'banned_ips': banned_ips, 'locked_users': locked_users}
@@ -260,8 +256,8 @@ def index():
 def login():
     login = request.forms['login']
     password = request.forms['password']
-    user, err = attempt_login(login, password)
-    if user:
+    success, err = attempt_login(login, password)
+    if success:
         return redirect('/mypage')
     else:
         return redirect('/?err=' + err)
