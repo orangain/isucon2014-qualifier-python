@@ -1,15 +1,14 @@
 # coding: utf-8
 
-import redis
-
-from bottle import Bottle, request, response, redirect, run
-from beaker.middleware import SessionMiddleware
-from werkzeug.contrib.fixers import ProxyFix
-
 import os
 import hashlib
 from datetime import datetime
 import json
+import base64
+
+import redis
+from bottle import Bottle, request, response, redirect, run
+from werkzeug.contrib.fixers import ProxyFix
 
 from views import render_index, render_mypage
 
@@ -210,11 +209,9 @@ def attempt_login(login, password):
 
     if user_password and password == user_password:
         user = r.hgetall(user_key) or None
-        session = request.environ.get('beaker.session')
-        session['login'] = login
-        session['last_login_at'] = user.get('last_login_at')
-        session['last_login_ip'] = user.get('last_login_ip')
-        session.save()
+        response.set_cookie('login', login)
+        response.set_cookie('last_login_at', base64.b64encode(str(user.get('last_login_at'))))
+        response.set_cookie('last_login_ip', str(user.get('last_login_ip')))
         #user['failure'] = 0
         #user['last_login_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         #user['last_login_ip'] = ip
@@ -289,9 +286,6 @@ def login():
     password = request.forms['password']
     user, err = attempt_login(login, password)
     if user:
-        session = request.environ.get('beaker.session')
-        session['user_id'] = user['id']
-        session.save()
         return redirect('/mypage')
     else:
         #print('err = ' + err)
@@ -308,10 +302,13 @@ def login():
 
 @app.route('/mypage')
 def mypage():
-    session = request.environ.get('beaker.session')
-    if session.get('user_id'):
+    if request.get_cookie('login'):
         #return render_template('mypage.html', session=session)
-        return render_mypage(session)
+        return render_mypage({
+            'last_login_at': base64.b64decode(request.get_cookie('last_login_at')),
+            'last_login_ip': request.get_cookie('last_login_ip'),
+            'login': request.get_cookie('login'),
+        })
     else:
         return redirect('/?err=login_required')
 
@@ -336,11 +333,6 @@ def execute_command(command):
 
 
 app = ProxyFix(app)
-app = SessionMiddleware(app, {
-    'session.type': 'cookie',
-    'session.encrypt_key': os.environ.get('ISU4_SESSION_SECRET', 'shirokane'),
-    'session.validate_key': os.environ.get('ISU4_SESSION_SECRET', 'shirokane'),
-})
 
 if __name__ == '__main__':
     load_config()
