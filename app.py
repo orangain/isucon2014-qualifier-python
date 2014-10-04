@@ -146,27 +146,19 @@ def load_users():
             yield id, login, password, salt, password_hash
 
 
-def user_locked(r, user_key):
-    #if not user:
-    #    return None
-    #return int(user.get('failure', 0)) >= config['user_lock_threshold']
+def user_locked(user_key, user):
     if user_key in LOCKED_USERS:
         return True
 
-    locked = int(r.hget(user_key, 'failure') or 0) >= config['user_lock_threshold']
+    locked = int(user['failure'] or 0) >= config['user_lock_threshold']
     if locked:
         LOCKED_USERS.add(user_key)
 
     return locked
 
 
-def ip_banned(r, ip_key):
-    #r = get_redis()
-    #key = _ip_key(request.remote_addr)
-    if ip_key in BANNED_IPS:
-        return True
-
-    banned = int(r.hget(ip_key, 'failure') or 0) >= config['ip_ban_threshold']
+def ip_banned(ip_key, failures):
+    banned = int(failures or 0) >= config['ip_ban_threshold']
     if banned:
         BANNED_IPS.add(ip_key)
 
@@ -176,70 +168,55 @@ def ip_banned(r, ip_key):
 def attempt_login(login, password):
     r = get_redis()
     user_key = _user_key(login)
-    #user = r.hgetall(user_key) or None
     user_password = PASSWORDS.get(login)
     ip = request.remote_addr
     ip_key = _ip_key(ip)
 
-    #def ip_banned():
-    #    return int(r.hget(ip_key, 'failure') or 0) >= config['ip_ban_threshold']
-
-    if ip_banned(r, ip_key):
+    if ip_key in BANNED_IPS:
         if user_password:
-            #user_key = _user_key(login)
+            r.hincrby(user_key, 'failure', 1)
+        return [None, 'banned']
+
+    read_pipe = r.pipeline()
+    read_pipe.hget(ip_key, 'failure')
+    read_pipe.hgetall(user_key)
+    ip_failures, user = read_pipe.execute()
+
+    if ip_banned(ip_key, ip_failures):
+        if user_password:
             r.hincrby(user_key, 'failure', 1)
         return [None, 'banned']
 
     if not user_password:
         r.hincrby(ip_key, 'failure', 1)
-        #return [None, 'wrong_login']
         return [None, 'wrong_login_or_password']
 
     # when user exists
 
-    #user = r.hgetall(user_key) or None
-
-    #def user_locked(user):
-    #    return int(user.get('failure', 0)) >= config['user_lock_threshold']
-
-    if user_locked(r, user_key):
-        #ip_key = _ip_key(ip)
+    if user_locked(user_key, user):
         r.hincrby(ip_key, 'failure', 1)
         return [None, 'locked']
 
     if user_password and password == user_password:
-        user = r.hgetall(user_key) or None
         response.set_cookie('login', login)
         response.set_cookie('last_login_at', base64.b64encode(str(user.get('last_login_at'))))
         response.set_cookie('last_login_ip', str(user.get('last_login_ip')))
-        #user['failure'] = 0
-        #user['last_login_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        #user['last_login_ip'] = ip
 
-        pipe = r.pipeline()
-        pipe.hset(user_key, 'failure', 0)
-        pipe.hset(user_key, 'last_login_at', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        pipe.hset(user_key, 'last_login_ip', ip)
-        #pipe.hmset(user_key, user)
+        write_pipe = r.pipeline()
+        write_pipe.hset(user_key, 'failure', 0)
+        write_pipe.hset(user_key, 'last_login_at', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        write_pipe.hset(user_key, 'last_login_ip', ip)
+        write_pipe.hset(ip_key, 'failure', 0)
+        write_pipe.execute()
 
-        #ip_key = _ip_key(ip)
-        pipe.hset(ip_key, 'failure', 0)
-        pipe.execute()
         return [user, None]
-    #elif user:
     else:
-        pipe = r.pipeline()
-        pipe.hincrby(user_key, 'failure', 1)
+        write_pipe = r.pipeline()
+        write_pipe.hincrby(user_key, 'failure', 1)
+        write_pipe.hincrby(ip_key, 'failure', 1)
+        write_pipe.execute()
 
-        #ip_key = _ip_key(ip)
-        pipe.hincrby(ip_key, 'failure', 1)
-        pipe.execute()
-        #return [None, 'wrong_password']
         return [None, 'wrong_login_or_password']
-    #else:
-    #    ip_key = _ip_key(ip)
-    #    r.hincrby(ip_key, 'failure', 1)
-    #    return [None, 'wrong_login']
 
 
 def get_ban_report(r=None):
