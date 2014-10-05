@@ -35,6 +35,11 @@ def load_config():
 
 
 def init_data():
+    global PASSWORDS, BANNED_IPS, LOCKED_USERS
+    PASSWORDS = {}
+    BANNED_IPS = set()
+    LOCKED_USERS = set()
+
     for id, login, password, salt, password_hash in load_users():
         PASSWORDS[login] = password
 
@@ -278,6 +283,12 @@ def mypage():
 def report():
     response.set_header('Cache-Control', 'no-cache, max-age=0')
     return json.dumps(get_ban_report())
+
+
+@app.route('/reload', method='POST')
+def reload():
+    init_data()
+    return 'OK'
 
 
 def execute_command(command):
