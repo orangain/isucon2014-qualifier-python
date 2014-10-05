@@ -28,10 +28,11 @@ echo "Clean cache without restarting"
 
 WORKERS=$(cat ~/webapp/python/gunicorn_config.py|grep ^workers|cut -d = -f 2| awk '{print $1}')
 
-seq $(expr 10 "*" $WORKERS) | xargs -n 1 -P $WORKERS -I % curl -X POST http://localhost:8080/reload
+#seq $(expr 10 "*" $WORKERS) | xargs -n 1 -P $WORKERS -I % curl -X POST http://localhost:8080/reload
 #for i in `seq 100` ; do
 #	curl -X POST http://localhost/reload
 #done
+curl -X POST http://localhost:8080/reload
 
 curl -o /dev/null http://localhost/stylesheets/isucon-bank.css
 curl -o /dev/null http://localhost/stylesheets/bootstrap.min.css
