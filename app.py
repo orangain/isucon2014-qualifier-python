@@ -1,4 +1,7 @@
 # coding: utf-8
+#
+# Licensed under MIT License, Copyright (c) 2014 orangain
+# Originally under MIT License, Copyright (c) Cookpad Inc. 2014
 
 import os
 import hashlib
